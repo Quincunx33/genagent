@@ -104,7 +104,6 @@ def save_env(key: str) -> bool:
     clean = sanitize_key(key)
     env_path = Path(__file__).resolve().parent / ".env"
     env_content = f"""# GenAgent Configuration (Gemini Powered)
-LLM_PROVIDER=gemini
 GEMINI_API_KEY={clean}
 GEMINI_MODEL=gemini-3.6-flash
 GEMINI_FALLBACK_MODELS=gemini-3.5-flash-lite,gemini-3.1-flash-lite

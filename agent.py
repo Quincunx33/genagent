@@ -63,7 +63,6 @@ class Console:
             ("/setup", "Launch interactive setup wizard"),
             ("/clear-memory", "Clear saved task memory"),
             ("/debug on|off", "Toggle structured developer events"),
-            ("/web [port]", "Launch HTML web dashboard for phone/PC/browser"),
             ("/cancel", "Stop the current task safely"),
             ("/exit", "Close the agent"),
         ]
@@ -121,14 +120,6 @@ def main() -> None:
             print(f"\n{console.c(console.t.gray, 'Session closed.')}")
             break
         if not text:
-            continue
-        if text.startswith("/web") or text.startswith("/ui") or text.startswith("/server"):
-            parts = text.split()
-            port = 8080
-            if len(parts) > 1 and parts[1].isdigit():
-                port = int(parts[1])
-            from web_server import run_web_server
-            run_web_server(port=port)
             continue
         if text == "/exit":
             print(f"{console.c(console.t.gray, 'Session closed. Goodbye.')}")

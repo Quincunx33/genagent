@@ -12,7 +12,7 @@
 
 </div>
 
-`genagent` is a dependency-free, terminal-based autonomous computer assistant for local development, coding, and controlled workspace automation. It uses state-of-the-art language models (Google Gemini with OpenAI/xAI/DeepSeek fallbacks) to plan, observe, and execute safe operations inside your workspace.
+`genagent` is a dependency-free, terminal-based autonomous computer assistant for local development, coding, and controlled workspace automation. It uses Google's Gemini models (with Gemini-only model fallbacks) to plan, observe, and execute safe operations inside your workspace.
 
 ## Highlights & Capabilities
 
@@ -58,15 +58,12 @@ cp .env.example .env
 Add your Gemini API key to `.env`:
 
 ```env
-LLM_PROVIDER=gemini
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-3.6-flash
 GEMINI_FALLBACK_MODELS=gemini-3.5-flash-lite,gemini-3.1-flash-lite
 AUTONOMY_MODE=supervised
 REQUIRE_CONFIRMATION=true
 ```
-
-The Studio Settings model picker loads the models available to your API key from Google's Gemini API and lists only models that support `generateContent`. Enter your API key and choose **Load models** if the list is not populated automatically. The picker is refreshed from Google's API, so it includes newly released models without requiring a code update.
 
 ### 3. Run the Agent
 
@@ -96,7 +93,6 @@ python3 -m unittest discover -s tests -p 'test_*.py' -v
 ├── planning.py              # Dynamic plan state machine & self-recovery
 ├── planner.py               # Tool definitions and schema registry
 ├── gemini_client.py         # Dependency-free Gemini REST client
-├── openai_compatible.py     # Fallback adapters for OpenAI/xAI/DeepSeek
 ├── autonomous_daemon.py     # Headless background task worker
 ├── config.py                # Environment and configuration loader
 ├── permissions.py           # Risk classification & secret redaction

@@ -8,9 +8,8 @@ import sys
 from typing import Any
 
 from config import settings
-from errors import AgentError, error_text, normalize_exception, traceback_text
+from errors import AgentError, ErrorCategory, error_text, normalize_exception, traceback_text
 from gemini_client import GeminiClient
-from openai_compatible import build_llm_client
 from logger import get_logger
 from memory import Memory
 from planner import tools_for_task
@@ -47,7 +46,7 @@ log = get_logger("genagent.loop")
 
 class AgentLoop:
     def __init__(self, client=None, output=print, store=None, memory=None, debug=None, non_interactive=False):
-        self.client = client or build_llm_client()
+        self.client = client or GeminiClient()
         self.output = output
         self.store = store or TaskStore(settings.db_path)
         self.memory = memory or Memory()
@@ -81,9 +80,9 @@ class AgentLoop:
         from permissions import classify_command, Risk
 
         if not isinstance(name, str) or not name:
-            raise AgentError("INVALID_TOOL_CALL", "Tool name is missing", "The model returned an invalid tool call.", False, 422)
+            raise AgentError("INVALID_TOOL_CALL", "Tool name is missing", "The model returned an invalid tool call.", category=ErrorCategory.VALIDATION, retryable=False, status=422)
         if not isinstance(args, dict):
-            raise AgentError("INVALID_TOOL_ARGS", f"Arguments for {name} must be an object", "The model returned invalid tool arguments.", False, 422)
+            raise AgentError("INVALID_TOOL_ARGS", f"Arguments for {name} must be an object", "The model returned invalid tool arguments.", category=ErrorCategory.VALIDATION, retryable=False, status=422)
         if name == "search_web" and not settings.web_search_enabled:
             return {"error": "web search is disabled", "code": "FEATURE_DISABLED"}
         if name == "install_plugin" and not settings.plugin_enabled:
@@ -182,7 +181,7 @@ class AgentLoop:
             "press_key": lambda: press_key(args["key"]),
         }
         if name not in dispatch:
-            raise AgentError("UNKNOWN_TOOL", f"Unknown tool: {name}", "The requested tool is not available.", False, 422)
+            raise AgentError("UNKNOWN_TOOL", f"Unknown tool: {name}", "The requested tool is not available.", category=ErrorCategory.VALIDATION, retryable=False, status=422)
         try:
             result = dispatch[name]()
             if name == "read_file" and isinstance(result, dict) and isinstance(result.get("content"), str):
@@ -208,6 +207,22 @@ class AgentLoop:
     def _call_key(call: dict[str, Any]) -> str:
         return json.dumps({"name": call.get("name"), "args": call.get("args", {})}, sort_keys=True, ensure_ascii=False, default=str)
 
+    @staticmethod
+    def _unstructured_tool_request(text: str, tools: list[dict[str, Any]]) -> bool:
+        """Detect tool-call-shaped JSON text without treating it as executable authority."""
+        candidate = (text or "").strip()
+        if candidate.startswith("```"):
+            candidate = re.sub(r"^```(?:json)?\s*|\s*```$", "", candidate, flags=re.IGNORECASE).strip()
+        try:
+            payload = json.loads(candidate)
+        except (TypeError, ValueError):
+            return False
+        calls = payload.get("tool_calls") if isinstance(payload, dict) else None
+        if not isinstance(calls, list) or not calls:
+            return False
+        available = {item.get("name") for item in tools if isinstance(item, dict)}
+        return all(isinstance(call, dict) and call.get("name") in available for call in calls)
+
     def _prompt(self, task: str, state: AgentState, previous_result: str | None = None) -> str:
         if state.step > 1:
             sections = [
@@ -218,7 +233,7 @@ class AgentLoop:
                 p_text = as_prompt(self.plan)
                 if p_text:
                     sections.append(f"Plan status:\n{p_text}")
-            sections.append(f"This is step {state.step} of a bounded run. If the requested information or task has been completed, DO NOT call any more tools and provide the final answer immediately.")
+            sections.append(f"This is step {state.step} of a bounded run. For action tasks, do not claim completion until every requested deliverable exists and the requested verification is confirmed by tool results. If work remains, continue with tools; if blocked, say so plainly. If everything is verified, provide the final answer.")
             return "\n\n".join(sections)[:settings.max_prompt_chars]
 
         # Step 1: Initial concise system prompt
@@ -246,6 +261,7 @@ class AgentLoop:
             "Working contract:\n"
             "- Tool Usage Rule: Call tools only when the request requires reading/modifying files or executing commands. For conversation, questions, or code explanations, answer directly in natural language without calling tools.\n"
             "- To create or edit files, always call write_file or patch_file with actual file content.\n"
+            "- Before finalizing an action task, compare every requested deliverable and acceptance criterion with actual tool results. Run requested tests/checks and fix failures; never claim completion or passing tests from intent alone. If blocked or incomplete, report that accurately.\n"
             "- When tools were executed, conclude with: 1. What changed 2. Verification evidence 3. Remaining risk. (For direct conversational replies, answer naturally).\n\n"
             "This is step 1 of a bounded run. Use an available tool only if action is needed; otherwise give the final answer."
         )
@@ -287,6 +303,7 @@ class AgentLoop:
         seen_results: dict[str, str] = {}
         consecutive_no_progress = 0
         self.last_task_tokens = {"prompt": 0, "candidates": 0, "total": 0}
+        unstructured_tool_retries = 0
         for step_idx in range(settings.max_agent_steps):
             state.step += 1
             if step_idx > 0:
@@ -295,24 +312,53 @@ class AgentLoop:
             if cancelled:
                 return cancelled
             self.output(safe_text(self.ui.thinking()))
+            continuing_tool_response = bool(state.history and state.history[-1].get("role") == "tool")
+            request_prompt = "" if continuing_tool_response else self._prompt(task, state, previous_result)
             try:
-                result = self.client.generate(self._prompt(task, state, previous_result), tools, state.history, cancel_event=self.cancel_event)
+                result = self.client.generate(request_prompt, tools, state.history, cancel_event=self.cancel_event)
             except TypeError:
-                result = self.client.generate(self._prompt(task, state, previous_result), tools, state.history)
+                result = self.client.generate(request_prompt, tools, state.history)
             except KeyboardInterrupt:
                 self.cancel_event.set()
                 return self._cancelled(task_id, task, state) or "Task cancelled."
             except Exception as exc:
                 err = normalize_exception(exc, operation="agent model request")
-                self._save(task_id, task, "failed", state)
+                self._save(task_id, task, "paused" if err.retryable else "failed", state)
                 log.error("model request failed error_id=%s", err.error_id, exc_info=True)
-                return f"{err.public_message} (error_id={err.error_id}, task_id={task_id})"
+                suffix = f" Task paused; resume with task_id={task_id}." if err.retryable else ""
+                return f"{err.public_message} (error_id={err.error_id}, task_id={task_id}){suffix}"
 
             if not isinstance(result, dict):
-                err = AgentError("INVALID_MODEL_RESPONSE", "Model client returned a non-object", "The AI service returned an invalid response.", False, 502)
+                err = AgentError("INVALID_MODEL_RESPONSE", "Model client returned a non-object", "The AI service returned an invalid response.", category=ErrorCategory.VALIDATION, retryable=False, status=502)
                 self._save(task_id, task, "failed", state)
                 return f"{err.public_message} (error_id={err.error_id}, task_id={task_id})"
-            state.add("assistant", {"text": result.get("text", ""), "tool_calls": result.get("tool_calls", [])})
+            if request_prompt:
+                state.add("user", request_prompt)
+            if not result.get("tool_calls") and self._unstructured_tool_request(str(result.get("text", "")), tools):
+                unstructured_tool_retries += 1
+                message = "The previous response represented a tool call as plain JSON text. No tool was executed. Continue the task using a native Gemini function call, or give a truthful final response if no action remains."
+                self.output(safe_text("  [RECOVERY] Model returned a tool request as plain text; no action was executed."))
+                if unstructured_tool_retries >= 2:
+                    failure = "Task not completed: Gemini repeatedly returned tool-call JSON as plain text instead of a structured function call. No such text was executed."
+                    self._save(task_id, task, "failed", state)
+                    return failure
+                previous_result = message
+                state.add("assistant", {"text": "[unstructured tool-call text withheld]", "tool_calls": []})
+                self._save(task_id, task, "running", state)
+                continue
+            unstructured_tool_retries = 0
+            if result.get("type") == "error":
+                text = str(result.get("text") or "The model request failed.")
+                error_info = result.get("error") if isinstance(result.get("error"), dict) else {}
+                resumable = bool(error_info.get("retryable"))
+                self._save(task_id, task, "paused" if resumable else "failed", state)
+                self.output(safe_text(text))
+                if resumable:
+                    return f"{text} Task paused; resume with task_id={task_id}."
+                return text
+            if result.get("type") == "cancelled" or self.cancel_event.is_set():
+                return self._cancelled(task_id, task, state) or "Task cancelled."
+            state.add("assistant", {"text": result.get("text", ""), "tool_calls": result.get("tool_calls", []), "gemini_content": result.get("gemini_content")})
             if isinstance(result, dict) and "usage" in result:
                 u = result["usage"]
                 p_tokens = u.get("prompt_tokens", 0)
@@ -323,13 +369,6 @@ class AgentLoop:
                 self.last_task_tokens["candidates"] += c_tokens
                 self.last_task_tokens["total"] = self.last_task_tokens["prompt"] + self.last_task_tokens["candidates"]
                 self.last_task_tokens["api_billed"] = self.last_task_tokens.get("api_billed", 0) + u.get("total_tokens", 0)
-            if result.get("type") == "error":
-                text = str(result.get("text") or "The model request failed.")
-                self._save(task_id, task, "failed", state)
-                self.output(safe_text(text))
-                return text
-            if result.get("type") == "cancelled" or self.cancel_event.is_set():
-                return self._cancelled(task_id, task, state) or "Task cancelled."
             calls = result.get("tool_calls", [])
             if result.get("type") == "text" or not calls:
                 text = str(result.get("text", "")).strip() or "I could not produce a useful final summary."
@@ -341,7 +380,7 @@ class AgentLoop:
                 return text
 
             if not isinstance(calls, list):
-                err = AgentError("INVALID_MODEL_RESPONSE", "Model tool_calls must be a list", "The AI service returned invalid tool calls.", False, 502)
+                err = AgentError("INVALID_MODEL_RESPONSE", "Model tool_calls must be a list", "The AI service returned invalid tool calls.", category=ErrorCategory.VALIDATION, retryable=False, status=502)
                 self._save(task_id, task, "failed", state)
                 return f"{err.public_message} (error_id={err.error_id}, task_id={task_id})"
             tool_results = []
@@ -400,10 +439,10 @@ class AgentLoop:
                 if result_key in seen_results:
                     compact_result = {"deduplicated": True, "same_as": seen_results[result_key], "note": "identical result already present in recent context"}
                     tool_results.append(compact_result)
-                    state.add("tool", {"tool": name, "args": args, "result": compact_result})
+                    state.add("tool", {"tool": name, "args": args, "result": compact_result, "call_id": call.get("id")})
                 else:
                     seen_results[result_key] = name
-                    state.add("tool", {"tool": name, "args": args, "result": tool_result})
+                    state.add("tool", {"tool": name, "args": args, "result": tool_result, "call_id": call.get("id")})
                     tool_results.append(tool_result)
 
             previous_result = json.dumps(safe_value(tool_results), ensure_ascii=False, default=str)[:settings.max_tool_result_chars]

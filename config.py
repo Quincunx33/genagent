@@ -49,20 +49,6 @@ _load_dotenv()
 @dataclass(frozen=True)
 class Settings:
     gemini_api_key: str = os.getenv("GEMINI_API_KEY", "")
-    llm_provider: str = os.getenv("LLM_PROVIDER", "gemini").lower()
-    llm_fallback_providers: tuple[str, ...] = tuple(p.strip().lower() for p in os.getenv("LLM_FALLBACK_PROVIDERS", "openai,xai,deepseek").split(",") if p.strip())
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-6-astra")
-    openai_fallback_models: tuple[str, ...] = tuple(m.strip() for m in os.getenv("OPENAI_FALLBACK_MODELS", "gpt-5.6-terra").split(",") if m.strip())
-    openai_base_url: str = os.getenv("OPENAI_BASE_URL", "https://api.openai.com/v1")
-    xai_api_key: str = os.getenv("XAI_API_KEY", "")
-    xai_model: str = os.getenv("XAI_MODEL", "grok-4.7")
-    xai_fallback_models: tuple[str, ...] = tuple(m.strip() for m in os.getenv("XAI_FALLBACK_MODELS", "grok-4.6").split(",") if m.strip())
-    xai_base_url: str = os.getenv("XAI_BASE_URL", "https://api.x.ai/v1")
-    deepseek_api_key: str = os.getenv("DEEPSEEK_API_KEY", "")
-    deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
-    deepseek_fallback_models: tuple[str, ...] = tuple(m.strip() for m in os.getenv("DEEPSEEK_FALLBACK_MODELS", "deepseek-v4-pro").split(",") if m.strip())
-    deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1")
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
     gemini_fallback_models: tuple[str, ...] = tuple(m.strip() for m in os.getenv("GEMINI_FALLBACK_MODELS", "gemini-3.5-flash-lite,gemini-3.1-flash-lite").split(",") if m.strip())
     workspace: Path = Path(os.getenv("AGENT_WORKSPACE", str(Path.cwd()))).expanduser().resolve()
@@ -117,8 +103,8 @@ settings = Settings()
 
 
 def is_configured() -> bool:
-    """Check if any valid LLM provider API key is configured."""
-    return bool(settings.gemini_api_key or settings.openai_api_key or settings.xai_api_key or settings.deepseek_api_key)
+    """Return whether the Gemini API key is configured."""
+    return bool(settings.gemini_api_key)
 
 
 def reload_settings() -> Settings:
