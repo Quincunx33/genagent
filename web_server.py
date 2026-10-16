@@ -79,7 +79,7 @@ def update_env_config(api_key: Optional[str] = None, model: Optional[str] = None
             config_dict["REQUIRE_CONFIRMATION"] = "true"
 
     config_dict.setdefault("LLM_PROVIDER", "gemini")
-    config_dict.setdefault("GEMINI_FAST_MODEL", "gemini-flash-lite-latest")
+    config_dict.setdefault("GEMINI_FAST_MODEL", "gemini-3.5-flash-lite")
     config_dict.setdefault("AGENT_WORKSPACE", ".")
     config_dict.setdefault("MAX_AGENT_STEPS", "50")
 
@@ -941,11 +941,11 @@ textarea#code-editor {
 
       <div class="form-item">
         <label>Primary AI Model:</label>
-        <select id="cfg-model">
-          <option value="gemini-flash-lite-latest">gemini-flash-lite-latest (Fastest, High Quota)</option>
-          <option value="gemini-2.5-flash">gemini-2.5-flash (Balanced)</option>
-          <option value="gemini-2.5-pro">gemini-2.5-pro (Advanced Reasoning)</option>
-        </select>
+        <div class="input-btn-group">
+          <select id="cfg-model" style="flex:1"><option value="">Enter an API key and load models</option></select>
+          <button class="btn-icon" onclick="loadGeminiModels()">↻ Load models</button>
+        </div>
+        <small style="display:block; margin-top:4px; font-size:11px; color:var(--text-dim);">Shows models available to your Gemini API key that support text generation.</small>
       </div>
 
       <div class="form-item">
@@ -1050,7 +1050,37 @@ async function fetchConfig() {
     }
     if (data.model) document.getElementById("cfg-model").value = data.model;
     if (data.autonomy_mode) document.getElementById("cfg-autonomy").value = data.autonomy_mode;
+    if (data.is_configured) loadGeminiModels(data.model);
   } catch (e) {}
+}
+
+async function loadGeminiModels(preferredModel = "") {
+  const key = document.getElementById("cfg-api-key").value.trim();
+  const select = document.getElementById("cfg-model");
+  const selected = preferredModel || select.value;
+  select.innerHTML = '<option value="">Loading models...</option>';
+  try {
+    const res = await fetch("/api/models", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ api_key: key })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.message || "Could not load Gemini models");
+    select.innerHTML = "";
+    (data.models || []).forEach(model => {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = model.display_name + " — " + model.id;
+      option.title = model.description || model.id;
+      select.appendChild(option);
+    });
+    if (!data.models || !data.models.length) throw new Error("No text-generation models were returned for this API key");
+    if ([...select.options].some(option => option.value === selected)) select.value = selected;
+  } catch (err) {
+    select.innerHTML = '<option value="">Model list unavailable — check API key/network</option>';
+    document.getElementById("key-status-msg").innerText = err.message;
+  }
 }
 
 async function refreshWorkspaceFiles() {
@@ -1523,6 +1553,20 @@ class GenAgentWebHandler(BaseHTTPRequestHandler):
             from setup import verify_gemini_key
             ok, msg = verify_gemini_key(k, m)
             self._send_json(200, {"ok": ok, "message": msg})
+            return
+
+        # Gemini Models API (the API key is accepted in the body, never the URL)
+        if path == "/api/models":
+            k = payload.get("api_key", "").strip() or settings.gemini_api_key
+            if not k:
+                self._send_json(400, {"ok": False, "message": "Enter or configure a Gemini API key first."})
+                return
+            try:
+                from gemini_client import list_gemini_models
+                models = list_gemini_models(k)
+                self._send_json(200, {"ok": True, "models": models})
+            except Exception as exc:
+                self._send_json(502, {"ok": False, "message": f"Could not load models: {exc}"})
             return
 
         # Save Config API

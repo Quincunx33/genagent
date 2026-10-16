@@ -107,8 +107,8 @@ def save_env(key: str) -> bool:
 LLM_PROVIDER=gemini
 GEMINI_API_KEY={clean}
 GEMINI_MODEL=gemini-3.6-flash
-GEMINI_FALLBACK_MODELS=gemini-3.5-flash,gemini-flash-lite-latest
-GEMINI_FAST_MODEL=gemini-flash-lite-latest
+GEMINI_FALLBACK_MODELS=gemini-3.5-flash-lite,gemini-3.1-flash-lite
+GEMINI_FAST_MODEL=gemini-3.5-flash-lite
 
 AGENT_WORKSPACE=.
 AGENT_HOST_MODE=false

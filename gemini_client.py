@@ -5,6 +5,7 @@ import hashlib
 import random
 import threading
 import time
+from urllib.parse import urlencode
 from collections import OrderedDict, deque
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -46,6 +47,41 @@ class _RequestGate:
 
 _REQUEST_GATE = _RequestGate()
 _PERSISTENT_QUOTA = RequestQuota(settings.db_path)
+
+
+def list_gemini_models(api_key: str, *, timeout: float = 10.0) -> list[dict[str, Any]]:
+    """Return models accessible to this API key that support generateContent."""
+    if not api_key:
+        raise ValueError("Gemini API key is required")
+    models: dict[str, dict[str, Any]] = {}
+    page_token = ""
+    while True:
+        params = {"key": api_key, "pageSize": 1000}
+        if page_token:
+            params["pageToken"] = page_token
+        request = Request(
+            "https://generativelanguage.googleapis.com/v1beta/models?" + urlencode(params),
+            headers={"Accept": "application/json"},
+        )
+        with urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8"))
+        for item in data.get("models", []):
+            if not isinstance(item, dict) or "generateContent" not in item.get("supportedGenerationMethods", []):
+                continue
+            name = item.get("baseModelId") or item.get("name", "").removeprefix("models/")
+            if not name:
+                continue
+            models[name] = {
+                "id": name,
+                "display_name": item.get("displayName") or name,
+                "description": item.get("description", ""),
+                "input_token_limit": item.get("inputTokenLimit"),
+                "output_token_limit": item.get("outputTokenLimit"),
+            }
+        page_token = data.get("nextPageToken", "")
+        if not page_token:
+            break
+    return sorted(models.values(), key=lambda item: (item["display_name"].lower(), item["id"]))
 
 
 class GeminiClient:
