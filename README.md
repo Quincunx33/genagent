@@ -61,10 +61,12 @@ Add your Gemini API key to `.env`:
 LLM_PROVIDER=gemini
 GEMINI_API_KEY=your_gemini_api_key_here
 GEMINI_MODEL=gemini-3.6-flash
-GEMINI_FALLBACK_MODELS=gemini-3.5-flash,gemini-flash-lite-latest
+GEMINI_FALLBACK_MODELS=gemini-3.5-flash-lite,gemini-3.1-flash-lite
 AUTONOMY_MODE=supervised
 REQUIRE_CONFIRMATION=true
 ```
+
+The Studio Settings model picker loads the models available to your API key from Google's Gemini API and lists only models that support `generateContent`. Enter your API key and choose **Load models** if the list is not populated automatically. The picker is refreshed from Google's API, so it includes newly released models without requiring a code update.
 
 ### 3. Run the Agent
 
